@@ -1,26 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
-module Database.PostgreSQL.Simple.QueueSpec (spec, main) where
-import           Control.Concurrent
-import           Control.Concurrent.STM
-import           Control.Concurrent.Async
-import           Control.Monad
-import           Data.Aeson
-import           Data.Function
-import           Data.List
-import           Database.PostgreSQL.Simple.Queue
-import           Database.PostgreSQL.Simple.Queue.Migrate
-import           Test.Hspec                     (Spec, hspec, it)
-import           Test.Hspec.Expectations.Lifted
-import           Test.Hspec.DB
-import           Control.Monad.Catch
-import           Control.Monad.IO.Class
-import           Data.List.Split
-import           Data.Either
+{-# LANGUAGE RecordWildCards #-}
 
+module Database.PostgreSQL.Simple.QueueSpec
+  ( spec
+  ) where
 
-main :: IO ()
-main = hspec spec
+import Control.Concurrent
+import Control.Concurrent.STM
+import Control.Concurrent.Async
+import Control.Monad
+import Data.Aeson
+import Data.Function
+import Data.List
+import Database.PostgreSQL.Simple.Queue
+import Database.PostgreSQL.Simple.Queue.Migrate
+import Test.Hspec (Spec, it)
+import Test.Hspec.Expectations.Lifted
+import Test.Hspec.DB
+import Control.Monad.Catch
+import Control.Monad.IO.Class
+import Data.List.Split
+import Data.Either
 
 schemaName :: String
 schemaName = "complicated_name"
