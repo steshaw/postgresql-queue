@@ -1,3 +1,12 @@
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE QuasiQuotes                #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE OverloadedStrings          #-}
+
 {-| This module utilize PostgreSQL to implement a durable queue for efficently processing
     arbitrary payloads which can be represented as JSON.
 
@@ -37,16 +46,7 @@ Most operations are provided in both flavors, with the exception of 'lock'.
 since it would keep the transaction open for a potentially long time. Although
 both flavors are provided, in general one versions is more useful for typical
 use cases.
-
 -}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE OverloadedStrings          #-}
 module Database.PostgreSQL.Simple.Queue
   ( -- * Types
     PayloadId (..)
@@ -61,26 +61,28 @@ module Database.PostgreSQL.Simple.Queue
   , withPayload
   , getCount
   ) where
-import           Control.Monad
-import           Control.Monad.Catch
-import           Data.Aeson
-import           Data.Function
-import           Data.Int
-import           Data.Text                               (Text)
-import           Data.Time
-import           Database.PostgreSQL.Simple              (Connection, Only (..))
-import qualified Database.PostgreSQL.Simple              as Simple
-import           Database.PostgreSQL.Simple.FromField
-import           Database.PostgreSQL.Simple.FromRow
-import           Database.PostgreSQL.Simple.Notification
-import           Database.PostgreSQL.Simple.SqlQQ
-import           Database.PostgreSQL.Simple.ToField
-import           Database.PostgreSQL.Simple.ToRow
-import           Database.PostgreSQL.Simple.Transaction
-import           Database.PostgreSQL.Transact
-import           Data.Monoid
-import           Data.String
-import           Control.Monad.IO.Class
+
+import Control.Monad
+import Control.Monad.Catch
+import Data.Aeson
+import Data.Function
+import Data.Int
+import Data.Text (Text)
+import Data.Time
+import Database.PostgreSQL.Simple (Connection, Only(..))
+import Database.PostgreSQL.Simple.FromField
+import Database.PostgreSQL.Simple.FromRow
+import Database.PostgreSQL.Simple.Notification
+import Database.PostgreSQL.Simple.SqlQQ
+import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.ToRow
+import Database.PostgreSQL.Simple.Transaction
+import Database.PostgreSQL.Transact
+import Data.Monoid
+import Data.String
+import Control.Monad.IO.Class
+
+import qualified Database.PostgreSQL.Simple as Simple
 
 -------------------------------------------------------------------------------
 ---  Types
@@ -94,7 +96,7 @@ instance FromRow PayloadId where
 instance ToRow PayloadId where
   toRow = toRow . Only
 
--- The fundemental record stored in the queue. The queue is a single table
+-- The fundamental record stored in the queue. The queue is a single table
 -- and each row consists of a 'Payload'
 data Payload = Payload
   { pId         :: PayloadId
@@ -172,6 +174,10 @@ enqueueWithDB schemaName value attempts =
 retryDB :: String -> Value -> Int -> DB PayloadId
 retryDB schemaName value attempts = enqueueWithDB schemaName value $ attempts + 1
 
+dequeDB :: (MonadIO m) => PayloadId -> DBT m Int64
+dequeDB pId =
+  execute [sql| UPDATE payloads SET state='dequeued' WHERE id = ? |] pId
+
 {-|
 
 Attempt to get a payload and process it. If the function passed in throws an exception
@@ -202,7 +208,7 @@ withPayloadDB schemaName retryCount f
  >>= \case
     [] -> return $ return Nothing
     [payload@Payload {..}] -> do
-      execute [sql| UPDATE payloads SET state='dequeued' WHERE id = ? |] pId
+      dequeDB pId
 
       -- Retry on failure up to retryCount
       handle (\e -> when (pAttempts < retryCount)
@@ -224,6 +230,7 @@ getCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema schemaName
         FROM payloads
         WHERE state='enqueued'
   |]
+
 -------------------------------------------------------------------------------
 ---  IO API
 -------------------------------------------------------------------------------
@@ -242,7 +249,7 @@ notifyPayload schemaName conn = do
 {-| Return the oldest 'Payload' in the 'Enqueued' state or block until a
     payload arrives. This function utilizes PostgreSQL's LISTEN and NOTIFY
     functionality to avoid excessively polling of the DB while
-    waiting for new payloads, without scarficing promptness.
+    waiting for new payloads, without sacrificing promptness.
 -}
 withPayload :: String
             -> Connection
