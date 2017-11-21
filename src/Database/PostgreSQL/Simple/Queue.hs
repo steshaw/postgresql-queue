@@ -209,26 +209,27 @@ withPayloadDB schemaName retryCount f
     [] -> return $ return Nothing
     [payload@Payload {..}] -> do
       dequeDB pId
-
-      -- Retry on failure up to retryCount
-      handle (\e -> when (pAttempts < retryCount)
-                         (void $ retryDB schemaName pValue pAttempts)
-                 >> return (Left e)
-             )
-             $ Right . Just <$> liftIO (f payload)
+      handle (onError payload) $ Right . Just <$> liftIO (f payload)
     xs -> return
         $ Left
         $ toException
         $ userError
         $ "LIMIT is 1 but got more than one row: "
         ++ show xs
+  where
+    onError :: Payload -> SomeException -> DBT IO (Either SomeException a)
+    onError Payload {..} e =
+      -- Retry on failure up to retryCount
+      when (pAttempts < retryCount)
+           (void $ retryDB schemaName pValue pAttempts)
+        >> return (Left e)
 
 -- | Get the number of rows in the 'Enqueued' state.
 getCountDB :: String -> DB Int64
 getCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema schemaName
   [sql| SELECT count(*)
         FROM payloads
-        WHERE state='enqueued'
+        WHERE state = 'enqueued'
   |]
 
 -------------------------------------------------------------------------------
