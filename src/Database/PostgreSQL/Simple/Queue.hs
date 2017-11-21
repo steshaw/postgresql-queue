@@ -1,11 +1,10 @@
-{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE QuasiQuotes                #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {-| This module utilize PostgreSQL to implement a durable queue for efficently processing
     arbitrary payloads which can be represented as JSON.
@@ -107,11 +106,10 @@ data Payload = Payload
   , pState      :: State
   , pAttempts   :: Int
   , pCreatedAt  :: UTCTime
-  , pModifiedAt :: UTCTime
   } deriving (Show, Eq)
 
 instance FromRow Payload where
-  fromRow = Payload <$> field <*> field <*> field <*> field <*> field <*> field
+  fromRow = Payload <$> field <*> field <*> field <*> field <*> field
 
 -- | A 'Payload' can exist in three states in the queue, 'Enqueued',
 --   and 'Dequeued'. A 'Payload' starts in the 'Enqueued' state and is locked
@@ -214,7 +212,7 @@ withPayloadDB schemaName retryCount f
   = query_
     ( withSchema schemaName
     $ [sql|
-      SELECT id, value, state, attempts, created_at, modified_at
+      SELECT id, value, state, attempts, created_at
       FROM payloads
       WHERE state = 'enqueued'
       ORDER BY created_at ASC

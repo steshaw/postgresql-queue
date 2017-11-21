@@ -1,10 +1,13 @@
-{-# LANGUAGE QuasiQuotes, OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+
 module Database.PostgreSQL.Simple.Queue.Migrate where
-import           Control.Monad
-import           Database.PostgreSQL.Simple
-import           Database.PostgreSQL.Simple.SqlQQ
-import           Data.Monoid
-import           Data.String
+
+import Control.Monad
+import Database.PostgreSQL.Simple
+import Database.PostgreSQL.Simple.SqlQQ
+import Data.Monoid
+import Data.String
 
 {-| This function creates a table and enumeration type that is
     appriopiate for the queue. The following sql is used.
@@ -42,7 +45,6 @@ migrate :: String -> Connection -> IO ()
 migrate schemaName conn = void $ execute_ conn $
   "CREATE SCHEMA IF NOT EXISTS " <> fromString schemaName <> ";" <>
   "SET search_path TO " <> fromString schemaName <> ";" <> [sql|
-
   DO $$
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'state_t') THEN
@@ -50,33 +52,14 @@ migrate schemaName conn = void $ execute_ conn $
     END IF;
   END$$;
 
-  CREATE OR REPLACE FUNCTION update_row_modified_function()
-  RETURNS TRIGGER AS
-  $$
-  BEGIN
-      NEW.modified_at = clock_timestamp();
-      RETURN NEW;
-  END;
-  $$
-  language 'plpgsql';
-
   CREATE TABLE IF NOT EXISTS payloads
   ( id BIGSERIAL PRIMARY KEY
   , value jsonb NOT NULL
   , attempts int NOT NULL DEFAULT 0
   , state state_t NOT NULL DEFAULT 'enqueued'
   , created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp()
-  , modified_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp()
   );
 
-  CREATE INDEX IF NOT EXISTS active_state_idx ON payloads (state)
-    WHERE (state = 'enqueued');
-  CREATE INDEX IF NOT EXISTS active_created_at_idx ON payloads (created_at)
-    WHERE (state = 'enqueued');
-
-  DROP TRIGGER IF EXISTS payloads_modified ON payloads;
-  CREATE TRIGGER payloads_modified
-  BEFORE UPDATE ON payloads
-  FOR EACH ROW EXECUTE PROCEDURE update_row_modified_function();
-
-  |]
+  CREATE INDEX IF NOT EXISTS payloads_idx_state ON payloads (state);
+  CREATE INDEX IF NOT EXISTS payloads_idx_created_at ON payloads (created_at);
+|]
