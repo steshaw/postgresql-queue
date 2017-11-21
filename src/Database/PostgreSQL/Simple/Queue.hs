@@ -251,6 +251,7 @@ getEnqueuedCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema sch
     WHERE state = 'enqueued'
   |]
 
+-- | Get the number of rows in the 'Failed' state.
 getFailedCountDB :: String -> DB Int64
 getFailedCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema schemaName
   [sql|
@@ -303,5 +304,8 @@ withPayload schemaName conn retryCount f = bracket_
 getEnqueuedCount :: String -> Connection -> IO Int64
 getEnqueuedCount schemaName = runDBT (getEnqueuedCountDB schemaName) ReadCommitted
 
+{-| Get the number of rows in the 'Failed' state. This function runs
+    'getFailedCountDB' in a 'ReadCommitted' transaction.
+-}
 getFailedCount :: String -> Connection -> IO Int64
 getFailedCount schemaName = runDBT (getFailedCountDB schemaName) ReadCommitted
