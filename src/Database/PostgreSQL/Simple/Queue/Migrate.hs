@@ -46,7 +46,7 @@ migrate schemaName conn = void $ execute_ conn $
   DO $$
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'state_t') THEN
-      CREATE TYPE state_t AS ENUM ('enqueued', 'dequeued');
+      CREATE TYPE state_t AS ENUM ('enqueued', 'dequeued', 'failed');
     END IF;
   END$$;
 

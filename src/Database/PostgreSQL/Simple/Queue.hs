@@ -55,11 +55,13 @@ module Database.PostgreSQL.Simple.Queue
   -- * DB API
   , enqueueDB
   , withPayloadDB
-  , getCountDB
+  , getEnqueuedCountDB
+  , getFailedCountDB
   -- * IO API
   , enqueue
   , withPayload
-  , getCount
+  , getEnqueuedCount
+  , getFailedCount
   ) where
 
 import Control.Monad
@@ -116,13 +118,14 @@ instance FromRow Payload where
 --   so some sort of process can occur with it, usually something in 'IO'.
 --   Once the processing is complete, the `Payload' is moved the 'Dequeued'
 --   state, which is the terminal state.
-data State = Enqueued | Dequeued
+data State = Enqueued | Dequeued | Failed
   deriving (Show, Eq, Ord, Enum, Bounded)
 
 instance ToField State where
   toField = toField . \case
     Enqueued -> "enqueued" :: Text
     Dequeued -> "dequeued"
+    Failed -> "failed"
 
 -- Converting from enumerations is annoying :(
 instance FromField State where
@@ -131,8 +134,9 @@ instance FromField State where
      if n == "state_t" then case y of
        Nothing -> returnError UnexpectedNull f "state can't be NULL"
        Just y' -> case y' of
-         "enqueued" -> return Enqueued
-         "dequeued" -> return Dequeued
+         "enqueued" -> pure Enqueued
+         "dequeued" -> pure Dequeued
+         "failed"   -> pure Failed
          x          -> returnError ConversionFailed f (show x)
      else
        returnError Incompatible f $
@@ -171,12 +175,25 @@ enqueueWithDB schemaName value attempts =
     )
     $ (attempts, value)
 
-retryDB :: String -> Value -> Int -> DB PayloadId
-retryDB schemaName value attempts = enqueueWithDB schemaName value $ attempts + 1
+retryDB :: Payload -> DB Int64
+retryDB Payload {..} =
+  execute [sql|
+    UPDATE payloads
+    SET attempts = ?
+    WHERE id = ?
+  |] (pAttempts + 1, pId)
 
-dequeDB :: (MonadIO m) => PayloadId -> DBT m Int64
+dequeDB :: PayloadId -> DB Int64
 dequeDB pId =
-  execute [sql| UPDATE payloads SET state='dequeued' WHERE id = ? |] pId
+  execute [sql| UPDATE payloads SET state = 'dequeued' WHERE id = ? |] pId
+
+failedDB :: PayloadId -> DB Int64
+failedDB pId =
+  execute [sql| UPDATE payloads SET state = 'failed' WHERE id = ? |] pId
+
+deleteDB :: PayloadId -> DB Int64
+deleteDB pId =
+  execute [sql| DELETE FROM payloads WHERE id = ? |] pId
 
 {-|
 
@@ -199,7 +216,7 @@ withPayloadDB schemaName retryCount f
     $ [sql|
       SELECT id, value, state, attempts, created_at, modified_at
       FROM payloads
-      WHERE state='enqueued'
+      WHERE state = 'enqueued'
       ORDER BY created_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -207,9 +224,11 @@ withPayloadDB schemaName retryCount f
     )
  >>= \case
     [] -> return $ return Nothing
-    [payload@Payload {..}] -> do
-      dequeDB pId
-      handle (onError payload) $ Right . Just <$> liftIO (f payload)
+    [payload@Payload {..}] ->
+      handle (onError payload) $ do
+        result <- liftIO (f payload)
+        deleteDB pId
+        pure (Right . Just $ result)
     xs -> return
         $ Left
         $ toException
@@ -218,18 +237,28 @@ withPayloadDB schemaName retryCount f
         ++ show xs
   where
     onError :: Payload -> SomeException -> DBT IO (Either SomeException a)
-    onError Payload {..} e =
-      -- Retry on failure up to retryCount
-      when (pAttempts < retryCount)
-           (void $ retryDB schemaName pValue pAttempts)
-        >> return (Left e)
+    onError payload@Payload {..} e = do
+      -- Retry on failure up to retryCount. Set state to failed when retryCount reached.
+      if (pAttempts < retryCount)
+      then void $ retryDB payload
+      else void $ failedDB pId
+      pure $ Left e
 
 -- | Get the number of rows in the 'Enqueued' state.
-getCountDB :: String -> DB Int64
-getCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema schemaName
-  [sql| SELECT count(*)
-        FROM payloads
-        WHERE state = 'enqueued'
+getEnqueuedCountDB :: String -> DB Int64
+getEnqueuedCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema schemaName
+  [sql|
+    SELECT count(*)
+    FROM payloads
+    WHERE state = 'enqueued'
+  |]
+
+getFailedCountDB :: String -> DB Int64
+getFailedCountDB schemaName = fmap (fromOnly . head) $ query_ $ withSchema schemaName
+  [sql|
+    SELECT count(*)
+    FROM payloads
+    WHERE state = 'failed'
   |]
 
 -------------------------------------------------------------------------------
@@ -271,7 +300,10 @@ withPayload schemaName conn retryCount f = bracket_
     Right (Just x) -> return $ Right x
 
 {-| Get the number of rows in the 'Enqueued' state. This function runs
-    'getCountDB' in a 'ReadCommitted' transaction.
+    'getEnqueuedCountDB' in a 'ReadCommitted' transaction.
 -}
-getCount :: String -> Connection -> IO Int64
-getCount schemaName = runDBT (getCountDB schemaName) ReadCommitted
+getEnqueuedCount :: String -> Connection -> IO Int64
+getEnqueuedCount schemaName = runDBT (getEnqueuedCountDB schemaName) ReadCommitted
+
+getFailedCount :: String -> Connection -> IO Int64
+getFailedCount schemaName = runDBT (getFailedCountDB schemaName) ReadCommitted

@@ -31,13 +31,15 @@ spec = describeDB (migrate schemaName) "Database.Queue" $ do
     (either throwM return =<< (withPayloadDB schemaName 8 return))
       `shouldReturn` Nothing
 
-  itDB "empty gives count 0" $
-    getCountDB schemaName `shouldReturn` 0
+  itDB "empty gives count 0" $ do
+    getEnqueuedCountDB schemaName `shouldReturn` 0
+    getFailedCountDB schemaName `shouldReturn` 0
 
   it "enqueuesDB/withPayloadDB" $ \conn -> do
     runDB conn $ do
       payloadId <- enqueueDB schemaName $ String "Hello"
-      getCountDB schemaName `shouldReturn` 1
+      getEnqueuedCountDB schemaName `shouldReturn` 1
+      getFailedCountDB schemaName `shouldReturn` 0
 
       either throwM return =<< withPayloadDB schemaName 8 (\(Payload {..}) -> do
         pId `shouldBe` payloadId
@@ -46,14 +48,18 @@ spec = describeDB (migrate schemaName) "Database.Queue" $ do
 
       -- read committed but still 0. I don't depend on this but I want to see if it
       -- stays like this.
-      getCountDB schemaName `shouldReturn` 0
+      getEnqueuedCountDB schemaName `shouldReturn` 0
+      getFailedCountDB schemaName `shouldReturn` 0
 
-    runDB conn $ getCountDB schemaName `shouldReturn` 0
+    runDB conn $ do
+      getEnqueuedCountDB schemaName `shouldReturn` 0
+      getFailedCountDB schemaName `shouldReturn` 0
 
   it "enqueuesDB/withPayloadDB/retries" $ \conn -> do
     runDB conn $ do
       void $ enqueueDB schemaName $ String "Hello"
-      getCountDB schemaName `shouldReturn` 1
+      getEnqueuedCountDB schemaName `shouldReturn` 1
+      getFailedCountDB schemaName `shouldReturn` 0
 
       xs <- replicateM 7 $ withPayloadDB schemaName 8 (\(Payload {..}) ->
           throwM $ userError "not enough tries"
@@ -66,12 +72,15 @@ spec = describeDB (migrate schemaName) "Database.Queue" $ do
         pValue `shouldBe` String "Hello"
         )
 
-    runDB conn $ getCountDB schemaName `shouldReturn` 0
+    runDB conn $ do
+      getEnqueuedCountDB schemaName `shouldReturn` 0
+      getFailedCountDB schemaName `shouldReturn` 0
 
-  it "enqueuesDB/withPayloadDB/timesout" $ \conn -> do
+  it "enqueuesDB/withPayloadDB/fails" $ \conn -> do
     runDB conn $ do
       void $ enqueueDB schemaName $ String "Hello"
-      getCountDB schemaName `shouldReturn` 1
+      getEnqueuedCountDB schemaName `shouldReturn` 1
+      getFailedCountDB schemaName `shouldReturn` 0
 
       xs <- replicateM 2 $ withPayloadDB schemaName 1 (\(Payload {..}) ->
           throwM $ userError "not enough tries"
@@ -79,7 +88,9 @@ spec = describeDB (migrate schemaName) "Database.Queue" $ do
 
       all isLeft xs `shouldBe` True
 
-    runDB conn $ getCountDB schemaName `shouldReturn` 0
+    runDB conn $ do
+      getEnqueuedCountDB schemaName `shouldReturn` 0
+      getFailedCountDB schemaName `shouldReturn` 1
 
   it "selects the oldest first" $ \conn -> do
     runDB conn $ do
@@ -88,7 +99,7 @@ spec = describeDB (migrate schemaName) "Database.Queue" $ do
 
       payloadId1 <- enqueueDB schemaName $ String "Hi"
 
-      getCountDB schemaName `shouldReturn` 2
+      getEnqueuedCountDB schemaName `shouldReturn` 2
 
       either throwM return =<< withPayloadDB schemaName 8 (\(Payload {..}) -> do
         pId `shouldBe` payloadId0
@@ -100,7 +111,7 @@ spec = describeDB (migrate schemaName) "Database.Queue" $ do
         pValue `shouldBe` String "Hi"
         )
 
-    runDB conn $ getCountDB schemaName `shouldReturn` 0
+    runDB conn $ getEnqueuedCountDB schemaName `shouldReturn` 0
 
   it "enqueues and dequeues concurrently withPayload" $ \testDB -> do
     let withPool' = withPool testDB
