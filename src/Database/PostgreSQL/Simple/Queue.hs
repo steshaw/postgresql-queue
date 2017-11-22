@@ -1,39 +1,38 @@
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
-{-| This module utilize PostgreSQL to implement a durable queue for efficently processing
-    arbitrary jobs which can be represented as JSON.
+{-|
+This module utilize PostgreSQL to implement a durable queue for efficiently
+processing arbitrary jobs which can be represented as JSON.
 
-    Typically a producer would enqueue a new job as part of larger database
-    transaction
+Typically a producer would enqueue a new job as part of larger database
+transaction:
 
- @
-   createAccount userRecord = do
-      'runDBTSerializable' $ do
-         createUserDB userRecord
-         'enqueueDB' $ makeVerificationEmail userRecord
- @
+@
+  createAccount userRecord = do
+     'runDBTSerializable' $ do
+        createUserDB userRecord
+        'enqueueDB' $ makeVerificationEmail userRecord
+@
 
 In another thread or process, the consumer would drain the queue.
 
- @
-    forever $ do
-      -- Attempt get a job or block until one is available
-      job <- 'lock' conn
+@
+  forever $ do
+    -- Attempt get a job or block until one is available
+    job <- 'lock' conn
 
-      -- Perform application specific parsing of the job arguments.
-      case fromJSON $ 'qjArgs' job of
-        Success x -> sendEmail x -- Perform application specific processing
-        Error err -> logErr err
+    -- Perform application specific parsing of the job arguments.
+    case fromJSON $ 'qjArgs' job of
+      Success x -> sendEmail x -- Perform application specific processing
+      Error err -> logErr err
 
-      -- Remove the job from future processing
-      'dequeue' conn $ 'qjId' job
- @
+    -- Remove the job from future processing
+    'dequeue' conn $ 'qjId' job
+@
 
 This modules provides two flavors of functions, a DB API and an IO API.
 Most operations are provided in both flavors, with the exception of 'lock'.
@@ -43,17 +42,21 @@ both flavors are provided, in general one versions is more useful for typical
 use cases.
 -}
 module Database.PostgreSQL.Simple.Queue
-  ( -- * Types
-    JobId (..)
-  , Status (..)
-  , Job (..)
+  (
+  -- * Types
+    JobId(..)
+  , Status(..)
+  , Job(..)
+
   -- * DB API
   , dequeueDB
   , deleteDB
   , enqueueDB
+  , notifyDB
   , withJobDB
   , getEnqueuedCountDB
   , getFailedCountDB
+
   -- * IO API
   , enqueue
   , withJob
@@ -144,6 +147,10 @@ instance FromField Status where
 notifyName :: (Monoid s, IsString s) => String -> s
 notifyName queueName = "queue_" <> fromString queueName
 
+notifyDB :: String -> DB ()
+notifyDB queueName =
+  void $ execute_ ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";")
+
 {-| Enqueue a new JSON value into the queue. This particularly function
     can be composed as part of a larger database transaction. For instance,
     a single transaction could create a user and enqueue a email message.
@@ -156,7 +163,7 @@ notifyName queueName = "queue_" <> fromString queueName
  @
 -}
 enqueueDB :: String -> Value -> DB JobId
-enqueueDB queueName value = enqueueWithDB queueName value
+enqueueDB queueName args = enqueueWithDB queueName args
 
 enqueueWithDB :: String -> Value -> DB JobId
 enqueueWithDB queueName args =
@@ -198,20 +205,16 @@ deleteDB Job {..} =
   |] (Only qjId)
 
 {-|
-
 Attempt to get a job and process it. If the function passed in throws an exception
 return it on the left side of the `Either`. Re-add the job up to some passed in
 maximum. Return `Nothing` is the `jobs` table is empty otherwise the result is an `a`
 from the job enqueue function.
-
 -}
-withJobDB :: String
-              -- ^ queue name
-              -> Int
-              -- ^ retry count
-              -> (Job -> IO a)
-              -- ^ job processing function
-              -> DB (Either SomeException (Maybe a))
+withJobDB
+  :: String -- ^ queue name
+  -> Int -- ^ retry count
+  -> (Job -> IO a) -- ^ job processing function
+  -> DB (Either SomeException (Maybe a))
 withJobDB queueName retryCount f
   = query [sql|
       SELECT id, args, run_at, status, attempts
@@ -239,7 +242,8 @@ withJobDB queueName retryCount f
   where
     onError :: Job -> SomeException -> DBT IO (Either SomeException a)
     onError job@Job {..} e = do
-      -- Retry on failure up to retryCount. Set status to 'Failed' when retryCount reached.
+      -- Retry on failure up to retryCount.
+      -- Set status to 'Failed' when retryCount reached.
       if (qjAttempts < retryCount)
       then void $ retryDB job
       else void $ failedDB job
@@ -269,7 +273,8 @@ getFailedCountDB queueName = getCountDB queueName Failed
     which can be composed with other queries in a single transaction.
 -}
 enqueue :: String -> Connection -> Value -> IO JobId
-enqueue queueName conn args = runDBT (enqueueDB queueName args) ReadCommitted conn
+enqueue queueName conn args =
+  runDBT (enqueueDB queueName args) ReadCommitted conn
 
 -- Block until a job notification is fired. Fired during insertion.
 notifyJob :: String -> Connection -> IO ()
@@ -282,12 +287,12 @@ notifyJob queueName conn = do
     functionality to avoid excessively polling of the DB while
     waiting for new jobs, without sacrificing promptness.
 -}
-withJob :: String
-            -> Connection
-            -> Int
-            -- ^ retry count
-            -> (Job -> IO a)
-            -> IO (Either SomeException a)
+withJob
+  :: String
+  -> Connection
+  -> Int -- ^ retry count
+  -> (Job -> IO a)
+  -> IO (Either SomeException a)
 withJob queueName conn retryCount f = bracket_
   (Simple.execute_ conn $ "LISTEN " <> notifyName queueName)
   (Simple.execute_ conn $ "UNLISTEN " <> notifyName queueName)
