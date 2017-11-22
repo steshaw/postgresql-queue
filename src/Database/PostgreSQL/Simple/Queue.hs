@@ -158,10 +158,7 @@ notifyDB queueName =
  @
 -}
 enqueueDB :: String -> Value -> DB JobId
-enqueueDB queueName args = enqueueWithDB queueName args
-
-enqueueWithDB :: String -> Value -> DB JobId
-enqueueWithDB queueName args =
+enqueueDB queueName args =
   fmap head $ query ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";" <> [sql|
       INSERT INTO queued_jobs (queue, args)
       VALUES (?, ?)
