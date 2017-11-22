@@ -63,9 +63,12 @@ module Database.PostgreSQL.Simple.Queue
 
 import Control.Monad
 import Control.Monad.Catch
+import Control.Monad.IO.Class
 import Data.Aeson
 import Data.Function
 import Data.Int
+import Data.Monoid
+import Data.String
 import Data.Text (Text)
 import Data.Time
 import Database.PostgreSQL.Simple (Connection, Only(..))
@@ -76,9 +79,6 @@ import Database.PostgreSQL.Simple.SqlQQ
 import Database.PostgreSQL.Simple.ToField
 import Database.PostgreSQL.Simple.Transaction
 import Database.PostgreSQL.Transact
-import Data.Monoid
-import Data.String
-import Control.Monad.IO.Class
 
 import qualified Database.PostgreSQL.Simple as Simple
 

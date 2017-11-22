@@ -5,22 +5,23 @@ module Database.PostgreSQL.Simple.QueueSpec
   ( spec
   ) where
 
+import Test.Hspec (Spec, it)
+import Test.Hspec.Expectations.Lifted
+import Test.Hspec.DB
+
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.Async
 import Control.Monad
-import Data.Aeson
-import Data.Function
-import Data.List
-import Database.PostgreSQL.Simple.Queue
-import Database.PostgreSQL.Simple.Queue.Migrate
-import Test.Hspec (Spec, it)
-import Test.Hspec.Expectations.Lifted
-import Test.Hspec.DB
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Data.List.Split
+import Data.Aeson
 import Data.Either
+import Data.Function
+import Data.List
+import Data.List.Split
+import Database.PostgreSQL.Simple.Queue
+import Database.PostgreSQL.Simple.Queue.Migrate
 
 queueName :: String
 queueName = "q123456789012345678901234567890123456789012345678901234567890"
