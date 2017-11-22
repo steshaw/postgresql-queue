@@ -78,7 +78,6 @@ import Database.PostgreSQL.Simple.FromRow
 import Database.PostgreSQL.Simple.Notification
 import Database.PostgreSQL.Simple.SqlQQ
 import Database.PostgreSQL.Simple.ToField
-import Database.PostgreSQL.Simple.ToRow
 import Database.PostgreSQL.Simple.Transaction
 import Database.PostgreSQL.Transact
 import Data.Monoid
@@ -95,9 +94,6 @@ newtype PayloadId = PayloadId { unPayloadId :: Int64 }
 
 instance FromRow PayloadId where
   fromRow = fromOnly <$> fromRow
-
-instance ToRow PayloadId where
-  toRow = toRow . Only
 
 -- The fundamental record stored in the queue. The queue is a single table
 -- and each row consists of a 'Payload'
@@ -160,35 +156,46 @@ notifyName queueName = "queue_" <> fromString queueName
  @
 -}
 enqueueDB :: String -> Value -> DB PayloadId
-enqueueDB queueName value = enqueueWithDB queueName value 0
+enqueueDB queueName value = enqueueWithDB queueName value
 
-enqueueWithDB :: String -> Value -> Int -> DB PayloadId
-enqueueWithDB queueName value attempts =
+enqueueWithDB :: String -> Value -> DB PayloadId
+enqueueWithDB queueName value =
   fmap head $ query ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";" <> [sql|
-      INSERT INTO payloads (attempts, value)
+      INSERT INTO payloads (queue, value)
       VALUES (?, ?)
       RETURNING id;
-    |]) (attempts, value)
+    |]) (queueName, value)
 
 retryDB :: Payload -> DB Int64
 retryDB Payload {..} =
   execute [sql|
     UPDATE payloads
-    SET attempts = ?
+    SET attempts = attempts + 1
     WHERE id = ?
-  |] (pAttempts + 1, pId)
+  |] (Only pId)
 
-dequeueDB :: PayloadId -> DB Int64
-dequeueDB pId =
-  execute [sql| UPDATE payloads SET state = 'dequeued' WHERE id = ? |] pId
+dequeueDB :: Payload -> DB Int64
+dequeueDB Payload {..} =
+  execute [sql|
+    UPDATE payloads
+    SET state = 'dequeued'
+    WHERE id = ?
+  |] (Only pId)
 
-failedDB :: PayloadId -> DB Int64
-failedDB pId =
-  execute [sql| UPDATE payloads SET state = 'failed' WHERE id = ? |] pId
+failedDB :: Payload -> DB Int64
+failedDB Payload {..} =
+  execute [sql|
+    UPDATE payloads
+    SET state = 'failed', attempts = attempts + 1
+    WHERE id = ?
+  |] (Only pId)
 
-deleteDB :: PayloadId -> DB Int64
-deleteDB pId =
-  execute [sql| DELETE FROM payloads WHERE id = ? |] pId
+deleteDB :: Payload -> DB Int64
+deleteDB Payload {..} =
+  execute [sql|
+    DELETE FROM payloads
+    WHERE id = ?
+  |] (Only pId)
 
 {-|
 
@@ -206,20 +213,21 @@ withPayloadDB :: String
               -- ^ payload processing function
               -> DB (Either SomeException (Maybe a))
 withPayloadDB queueName retryCount f
-  = query_ [sql|
+  = query [sql|
       SELECT id, value, state, attempts, created_at
       FROM payloads
-      WHERE state = 'enqueued'
+      WHERE queue = ?
+      AND state = 'enqueued'
       ORDER BY created_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
-    |]
+    |] (Only $ queueName)
  >>= \case
     [] -> return $ return Nothing
     [payload@Payload {..}] ->
       handle (onError payload) $ do
         result <- liftIO (f payload)
-        deleteDB pId
+        deleteDB payload
         pure (Right . Just $ result)
     xs -> return
         $ Left
@@ -233,24 +241,25 @@ withPayloadDB queueName retryCount f
       -- Retry on failure up to retryCount. Set state to failed when retryCount reached.
       if (pAttempts < retryCount)
       then void $ retryDB payload
-      else void $ failedDB pId
+      else void $ failedDB payload
       pure $ Left e
+
+-- | Get the number of rows in a particular state.
+getCountDB :: String -> State -> DB Int64
+getCountDB queueName state = fmap (fromOnly . head) $ query [sql|
+    SELECT count(*)
+    FROM payloads
+    WHERE queue = ?
+    AND state = ?
+  |] (queueName, state)
 
 -- | Get the number of rows in the 'Enqueued' state.
 getEnqueuedCountDB :: String -> DB Int64
-getEnqueuedCountDB queueName = fmap (fromOnly . head) $ query_ [sql|
-    SELECT count(*)
-    FROM payloads
-    WHERE state = 'enqueued'
-  |]
+getEnqueuedCountDB queueName = getCountDB queueName Enqueued
 
 -- | Get the number of rows in the 'Failed' state.
 getFailedCountDB :: String -> DB Int64
-getFailedCountDB queueName = fmap (fromOnly . head) $ query_ [sql|
-    SELECT count(*)
-    FROM payloads
-    WHERE state = 'failed'
-  |]
+getFailedCountDB queueName = getCountDB queueName Failed
 
 -------------------------------------------------------------------------------
 ---  IO API

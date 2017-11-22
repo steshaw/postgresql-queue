@@ -21,6 +21,7 @@ migrate conn = void $ execute_ conn [sql|
 
   CREATE TABLE IF NOT EXISTS payloads
   ( id BIGSERIAL PRIMARY KEY
+  , queue TEXT NOT NULL
   , value jsonb NOT NULL
   , attempts int NOT NULL DEFAULT 0
   , state state_t NOT NULL DEFAULT 'enqueued'
