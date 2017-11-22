@@ -14,8 +14,8 @@ migrate :: Connection -> IO ()
 migrate conn = void $ execute_ conn [sql|
   DO $$
   BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'state_t') THEN
-      CREATE TYPE state_t AS ENUM ('enqueued', 'dequeued', 'failed');
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status') THEN
+      CREATE TYPE status AS ENUM ('enqueued', 'dequeued', 'failed');
     END IF;
   END$$;
 
@@ -24,10 +24,10 @@ migrate conn = void $ execute_ conn [sql|
   , queue TEXT NOT NULL
   , args jsonb NOT NULL
   , run_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp()
-  , state state_t NOT NULL DEFAULT 'enqueued'
+  , status status NOT NULL DEFAULT 'enqueued'
   , attempts int NOT NULL DEFAULT 0
   );
 
   CREATE INDEX IF NOT EXISTS queued_jobs_idx
-  ON queued_jobs (queue, state, run_at);
+  ON queued_jobs (queue, status, run_at);
 |]

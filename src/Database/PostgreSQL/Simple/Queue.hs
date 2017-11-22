@@ -45,7 +45,7 @@ use cases.
 module Database.PostgreSQL.Simple.Queue
   ( -- * Types
     JobId (..)
-  , State (..)
+  , Status (..)
   , Job (..)
   -- * DB API
   , dequeueDB
@@ -98,33 +98,37 @@ data Job = Job
   { qjId :: JobId
   , qjArgs :: Value -- ^ The arguments of a job encoded as JSON.
   , qjRunAt :: UTCTime
-  , qjState :: State
+  , qjStatus :: Status
   , qjAttempts :: Int
   } deriving (Show, Eq)
 
 instance FromRow Job where
   fromRow = Job <$> field <*> field <*> field <*> field <*> field
 
--- | A 'Job' can exist in three states in the queue, 'Enqueued',
---   and 'Dequeued'. A 'Job' starts in the 'Enqueued' state and is locked
---   so some sort of process can occur with it, usually something in 'IO'.
---   Once the processing is complete, the `Job' is moved the 'Dequeued'
---   state, which is the terminal state.
-data State = Enqueued | Dequeued | Failed
+{- |
+A 'Job' can have one of 3 statuses. A 'Job' starts life 'Enqueued'.
+If a job fails too many times, it will be set to 'Failed'.
+A job can be set to 'Dequeued' if successfully processed (but it
+can be deleted instead).
+-}
+data Status
+  = Enqueued
+  | Dequeued
+  | Failed
   deriving (Show, Eq, Ord, Enum, Bounded)
 
-instance ToField State where
+instance ToField Status where
   toField = toField . \case
     Enqueued -> "enqueued" :: Text
     Dequeued -> "dequeued"
     Failed -> "failed"
 
 -- Converting from enumerations is annoying :(
-instance FromField State where
+instance FromField Status where
   fromField f y = do
      n <- typename f
-     if n == "state_t" then case y of
-       Nothing -> returnError UnexpectedNull f "state can't be NULL"
+     if n == "status" then case y of
+       Nothing -> returnError UnexpectedNull f "status can't be NULL"
        Just y' -> case y' of
          "enqueued" -> pure Enqueued
          "dequeued" -> pure Dequeued
@@ -132,7 +136,7 @@ instance FromField State where
          x          -> returnError ConversionFailed f (show x)
      else
        returnError Incompatible f $
-         "Expect type name to be state but it was " ++ show n
+         "Expect type name to be status but it was " ++ show n
 
 -------------------------------------------------------------------------------
 ---  DB API
@@ -174,7 +178,7 @@ dequeueDB :: Job -> DB Int64
 dequeueDB Job {..} =
   execute [sql|
     UPDATE queued_jobs
-    SET state = 'dequeued'
+    SET status = 'dequeued'
     WHERE id = ?
   |] (Only qjId)
 
@@ -182,7 +186,7 @@ failedDB :: Job -> DB Int64
 failedDB Job {..} =
   execute [sql|
     UPDATE queued_jobs
-    SET state = 'failed', attempts = attempts + 1
+    SET status = 'failed', attempts = attempts + 1
     WHERE id = ?
   |] (Only qjId)
 
@@ -210,10 +214,10 @@ withJobDB :: String
               -> DB (Either SomeException (Maybe a))
 withJobDB queueName retryCount f
   = query [sql|
-      SELECT id, args, run_at, state, attempts
+      SELECT id, args, run_at, status, attempts
       FROM queued_jobs
       WHERE queue = ?
-      AND state = 'enqueued'
+      AND status = 'enqueued'
       AND run_at <= clock_timestamp()
       ORDER BY run_at ASC
       FOR UPDATE SKIP LOCKED
@@ -235,26 +239,26 @@ withJobDB queueName retryCount f
   where
     onError :: Job -> SomeException -> DBT IO (Either SomeException a)
     onError job@Job {..} e = do
-      -- Retry on failure up to retryCount. Set state to failed when retryCount reached.
+      -- Retry on failure up to retryCount. Set status to 'Failed' when retryCount reached.
       if (qjAttempts < retryCount)
       then void $ retryDB job
       else void $ failedDB job
       pure $ Left e
 
--- | Get the number of rows in a particular state.
-getCountDB :: String -> State -> DB Int64
-getCountDB queueName state = fmap (fromOnly . head) $ query [sql|
+-- | Get the number of rows in a particular status.
+getCountDB :: String -> Status -> DB Int64
+getCountDB queueName status = fmap (fromOnly . head) $ query [sql|
     SELECT count(*)
     FROM queued_jobs
     WHERE queue = ?
-    AND state = ?
-  |] (queueName, state)
+    AND status = ?
+  |] (queueName, status)
 
--- | Get the number of rows in the 'Enqueued' state.
+-- | Get the number of rows that are 'Enqueued'.
 getEnqueuedCountDB :: String -> DB Int64
 getEnqueuedCountDB queueName = getCountDB queueName Enqueued
 
--- | Get the number of rows in the 'Failed' state.
+-- | Get the number of rows that are 'Failed'.
 getFailedCountDB :: String -> DB Int64
 getFailedCountDB queueName = getCountDB queueName Failed
 
@@ -273,7 +277,7 @@ notifyJob queueName conn = do
   Notification {..} <- getNotification conn
   unless (notificationChannel == notifyName queueName) $ notifyJob queueName conn
 
-{-| Return the oldest 'Job' in the 'Enqueued' state or block until a
+{-| Return the oldest 'Job' which is 'Enqueued' or block until a
     job arrives. This function utilizes PostgreSQL's LISTEN and NOTIFY
     functionality to avoid excessively polling of the DB while
     waiting for new jobs, without sacrificing promptness.
@@ -296,13 +300,13 @@ withJob queueName conn retryCount f = bracket_
       continue
     Right (Just x) -> return $ Right x
 
-{-| Get the number of rows in the 'Enqueued' state. This function runs
+{-| Get the number of rows which are 'Enqueued'. This function runs
     'getEnqueuedCountDB' in a 'ReadCommitted' transaction.
 -}
 getEnqueuedCount :: String -> Connection -> IO Int64
 getEnqueuedCount queueName = runDBT (getEnqueuedCountDB queueName) ReadCommitted
 
-{-| Get the number of rows in the 'Failed' state. This function runs
+{-| Get the number of rows which are 'Failed'. This function runs
     'getFailedCountDB' in a 'ReadCommitted' transaction.
 -}
 getFailedCount :: String -> Connection -> IO Int64
