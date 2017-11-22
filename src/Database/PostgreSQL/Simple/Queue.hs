@@ -7,9 +7,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-| This module utilize PostgreSQL to implement a durable queue for efficently processing
-    arbitrary payloads which can be represented as JSON.
+    arbitrary jobs which can be represented as JSON.
 
-    Typically a producer would enqueue a new payload as part of larger database
+    Typically a producer would enqueue a new job as part of larger database
     transaction
 
  @
@@ -23,21 +23,17 @@ In another thread or process, the consumer would drain the queue.
 
  @
     forever $ do
-      -- Attempt get a payload or block until one is available
-      payload <- 'lock' conn
+      -- Attempt get a job or block until one is available
+      job <- 'lock' conn
 
-      -- Perform application specifc parsing of the payload value
-      case fromJSON $ 'pValue' payload of
+      -- Perform application specific parsing of the job arguments.
+      case fromJSON $ 'qjArgs' job of
         Success x -> sendEmail x -- Perform application specific processing
         Error err -> logErr err
 
-      -- Remove the payload from future processing
-      'dequeue' conn $ 'pId' payload
+      -- Remove the job from future processing
+      'dequeue' conn $ 'qjId' job
  @
-
- For a more complete example or a consumer, utilizing the provided
- 'Database.PostgreSQL.Simple.Queue.Main.defaultMain', see
- 'Database.PostgreSQL.Simple.Queue.Examples.EmailQueue.EmailQueue'.
 
 This modules provides two flavors of functions, a DB API and an IO API.
 Most operations are provided in both flavors, with the exception of 'lock'.
@@ -48,19 +44,19 @@ use cases.
 -}
 module Database.PostgreSQL.Simple.Queue
   ( -- * Types
-    PayloadId (..)
+    JobId (..)
   , State (..)
-  , Payload (..)
+  , Job (..)
   -- * DB API
   , dequeueDB
   , deleteDB
   , enqueueDB
-  , withPayloadDB
+  , withJobDB
   , getEnqueuedCountDB
   , getFailedCountDB
   -- * IO API
   , enqueue
-  , withPayload
+  , withJob
   , getEnqueuedCount
   , getFailedCount
   ) where
@@ -89,30 +85,31 @@ import qualified Database.PostgreSQL.Simple as Simple
 -------------------------------------------------------------------------------
 ---  Types
 -------------------------------------------------------------------------------
-newtype PayloadId = PayloadId { unPayloadId :: Int64 }
-  deriving (Eq, Show, FromField, ToField)
+newtype JobId = JobId
+  { unJobId :: Int64
+  } deriving (Eq, Show, FromField, ToField)
 
-instance FromRow PayloadId where
+instance FromRow JobId where
   fromRow = fromOnly <$> fromRow
 
 -- The fundamental record stored in the queue. The queue is a single table
--- and each row consists of a 'Payload'
-data Payload = Payload
-  { pId         :: PayloadId
-  , pValue      :: Value
-  -- ^ The JSON value of a payload
-  , pState      :: State
-  , pAttempts   :: Int
-  , pCreatedAt  :: UTCTime
+-- and each row consists of a 'Job'.
+      -- SELECT id, args, state, attempts, created_at
+data Job = Job
+  { qjId :: JobId
+  , qjArgs :: Value -- ^ The arguments of a job encoded as JSON.
+  , qjState :: State
+  , qjAttempts :: Int
+  , qjCreatedAt :: UTCTime
   } deriving (Show, Eq)
 
-instance FromRow Payload where
-  fromRow = Payload <$> field <*> field <*> field <*> field <*> field
+instance FromRow Job where
+  fromRow = Job <$> field <*> field <*> field <*> field <*> field
 
--- | A 'Payload' can exist in three states in the queue, 'Enqueued',
---   and 'Dequeued'. A 'Payload' starts in the 'Enqueued' state and is locked
+-- | A 'Job' can exist in three states in the queue, 'Enqueued',
+--   and 'Dequeued'. A 'Job' starts in the 'Enqueued' state and is locked
 --   so some sort of process can occur with it, usually something in 'IO'.
---   Once the processing is complete, the `Payload' is moved the 'Dequeued'
+--   Once the processing is complete, the `Job' is moved the 'Dequeued'
 --   state, which is the terminal state.
 data State = Enqueued | Dequeued | Failed
   deriving (Show, Eq, Ord, Enum, Bounded)
@@ -155,67 +152,67 @@ notifyName queueName = "queue_" <> fromString queueName
          'enqueueDB' $ makeVerificationEmail userRecord
  @
 -}
-enqueueDB :: String -> Value -> DB PayloadId
+enqueueDB :: String -> Value -> DB JobId
 enqueueDB queueName value = enqueueWithDB queueName value
 
-enqueueWithDB :: String -> Value -> DB PayloadId
-enqueueWithDB queueName value =
+enqueueWithDB :: String -> Value -> DB JobId
+enqueueWithDB queueName args =
   fmap head $ query ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";" <> [sql|
-      INSERT INTO payloads (queue, value)
+      INSERT INTO queued_jobs (queue, args)
       VALUES (?, ?)
       RETURNING id;
-    |]) (queueName, value)
+    |]) (queueName, args)
 
-retryDB :: Payload -> DB Int64
-retryDB Payload {..} =
+retryDB :: Job -> DB Int64
+retryDB Job {..} =
   execute [sql|
-    UPDATE payloads
+    UPDATE queued_jobs
     SET attempts = attempts + 1
     WHERE id = ?
-  |] (Only pId)
+  |] (Only qjId)
 
-dequeueDB :: Payload -> DB Int64
-dequeueDB Payload {..} =
+dequeueDB :: Job -> DB Int64
+dequeueDB Job {..} =
   execute [sql|
-    UPDATE payloads
+    UPDATE queued_jobs
     SET state = 'dequeued'
     WHERE id = ?
-  |] (Only pId)
+  |] (Only qjId)
 
-failedDB :: Payload -> DB Int64
-failedDB Payload {..} =
+failedDB :: Job -> DB Int64
+failedDB Job {..} =
   execute [sql|
-    UPDATE payloads
+    UPDATE queued_jobs
     SET state = 'failed', attempts = attempts + 1
     WHERE id = ?
-  |] (Only pId)
+  |] (Only qjId)
 
-deleteDB :: Payload -> DB Int64
-deleteDB Payload {..} =
+deleteDB :: Job -> DB Int64
+deleteDB Job {..} =
   execute [sql|
-    DELETE FROM payloads
+    DELETE FROM queued_jobs
     WHERE id = ?
-  |] (Only pId)
+  |] (Only qjId)
 
 {-|
 
-Attempt to get a payload and process it. If the function passed in throws an exception
-return it on the left side of the `Either`. Re-add the payload up to some passed in
-maximum. Return `Nothing` is the `payloads` table is empty otherwise the result is an `a`
-from the payload enqueue function.
+Attempt to get a job and process it. If the function passed in throws an exception
+return it on the left side of the `Either`. Re-add the job up to some passed in
+maximum. Return `Nothing` is the `jobs` table is empty otherwise the result is an `a`
+from the job enqueue function.
 
 -}
-withPayloadDB :: String
+withJobDB :: String
               -- ^ queue name
               -> Int
               -- ^ retry count
-              -> (Payload -> IO a)
-              -- ^ payload processing function
+              -> (Job -> IO a)
+              -- ^ job processing function
               -> DB (Either SomeException (Maybe a))
-withPayloadDB queueName retryCount f
+withJobDB queueName retryCount f
   = query [sql|
-      SELECT id, value, state, attempts, created_at
-      FROM payloads
+      SELECT id, args, state, attempts, created_at
+      FROM queued_jobs
       WHERE queue = ?
       AND state = 'enqueued'
       ORDER BY created_at ASC
@@ -224,10 +221,10 @@ withPayloadDB queueName retryCount f
     |] (Only $ queueName)
  >>= \case
     [] -> return $ return Nothing
-    [payload@Payload {..}] ->
-      handle (onError payload) $ do
-        result <- liftIO (f payload)
-        deleteDB payload
+    [job@Job {..}] ->
+      handle (onError job) $ do
+        result <- liftIO (f job)
+        deleteDB job
         pure (Right . Just $ result)
     xs -> return
         $ Left
@@ -236,19 +233,19 @@ withPayloadDB queueName retryCount f
         $ "LIMIT is 1 but got more than one row: "
         ++ show xs
   where
-    onError :: Payload -> SomeException -> DBT IO (Either SomeException a)
-    onError payload@Payload {..} e = do
+    onError :: Job -> SomeException -> DBT IO (Either SomeException a)
+    onError job@Job {..} e = do
       -- Retry on failure up to retryCount. Set state to failed when retryCount reached.
-      if (pAttempts < retryCount)
-      then void $ retryDB payload
-      else void $ failedDB payload
+      if (qjAttempts < retryCount)
+      then void $ retryDB job
+      else void $ failedDB job
       pure $ Left e
 
 -- | Get the number of rows in a particular state.
 getCountDB :: String -> State -> DB Int64
 getCountDB queueName state = fmap (fromOnly . head) $ query [sql|
     SELECT count(*)
-    FROM payloads
+    FROM queued_jobs
     WHERE queue = ?
     AND state = ?
   |] (queueName, state)
@@ -267,35 +264,35 @@ getFailedCountDB queueName = getCountDB queueName Failed
 {-| Enqueue a new JSON value into the queue. See 'enqueueDB' for a version
     which can be composed with other queries in a single transaction.
 -}
-enqueue :: String -> Connection -> Value -> IO PayloadId
-enqueue queueName conn value = runDBT (enqueueDB queueName value) ReadCommitted conn
+enqueue :: String -> Connection -> Value -> IO JobId
+enqueue queueName conn args = runDBT (enqueueDB queueName args) ReadCommitted conn
 
--- Block until a payload notification is fired. Fired during insertion.
-notifyPayload :: String -> Connection -> IO ()
-notifyPayload queueName conn = do
+-- Block until a job notification is fired. Fired during insertion.
+notifyJob :: String -> Connection -> IO ()
+notifyJob queueName conn = do
   Notification {..} <- getNotification conn
-  unless (notificationChannel == notifyName queueName) $ notifyPayload queueName conn
+  unless (notificationChannel == notifyName queueName) $ notifyJob queueName conn
 
-{-| Return the oldest 'Payload' in the 'Enqueued' state or block until a
-    payload arrives. This function utilizes PostgreSQL's LISTEN and NOTIFY
+{-| Return the oldest 'Job' in the 'Enqueued' state or block until a
+    job arrives. This function utilizes PostgreSQL's LISTEN and NOTIFY
     functionality to avoid excessively polling of the DB while
-    waiting for new payloads, without sacrificing promptness.
+    waiting for new jobs, without sacrificing promptness.
 -}
-withPayload :: String
+withJob :: String
             -> Connection
             -> Int
             -- ^ retry count
-            -> (Payload -> IO a)
+            -> (Job -> IO a)
             -> IO (Either SomeException a)
-withPayload queueName conn retryCount f = bracket_
+withJob queueName conn retryCount f = bracket_
   (Simple.execute_ conn $ "LISTEN " <> notifyName queueName)
   (Simple.execute_ conn $ "UNLISTEN " <> notifyName queueName)
   $ fix
-  $ \continue -> runDBT (withPayloadDB queueName retryCount f) ReadCommitted conn
+  $ \continue -> runDBT (withJobDB queueName retryCount f) ReadCommitted conn
   >>= \case
     Left x -> return $ Left x
     Right Nothing -> do
-      notifyPayload queueName conn
+      notifyJob queueName conn
       continue
     Right (Just x) -> return $ Right x
 

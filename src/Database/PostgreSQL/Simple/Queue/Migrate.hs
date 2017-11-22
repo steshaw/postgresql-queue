@@ -19,15 +19,15 @@ migrate conn = void $ execute_ conn [sql|
     END IF;
   END$$;
 
-  CREATE TABLE IF NOT EXISTS payloads
+  CREATE TABLE IF NOT EXISTS queued_jobs
   ( id BIGSERIAL PRIMARY KEY
   , queue TEXT NOT NULL
-  , value jsonb NOT NULL
+  , args jsonb NOT NULL
   , attempts int NOT NULL DEFAULT 0
   , state state_t NOT NULL DEFAULT 'enqueued'
   , created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp()
   );
 
-  CREATE INDEX IF NOT EXISTS payloads_idx_state ON payloads (state);
-  CREATE INDEX IF NOT EXISTS payloads_idx_created_at ON payloads (created_at);
+  CREATE INDEX IF NOT EXISTS queued_jobs_idx
+  ON queued_jobs (queue, state, created_at);
 |]
