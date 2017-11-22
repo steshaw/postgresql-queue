@@ -23,11 +23,11 @@ migrate conn = void $ execute_ conn [sql|
   ( id BIGSERIAL PRIMARY KEY
   , queue TEXT NOT NULL
   , args jsonb NOT NULL
-  , attempts int NOT NULL DEFAULT 0
+  , run_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp()
   , state state_t NOT NULL DEFAULT 'enqueued'
-  , created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp()
+  , attempts int NOT NULL DEFAULT 0
   );
 
   CREATE INDEX IF NOT EXISTS queued_jobs_idx
-  ON queued_jobs (queue, state, created_at);
+  ON queued_jobs (queue, state, run_at);
 |]

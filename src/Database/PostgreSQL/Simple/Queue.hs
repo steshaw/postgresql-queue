@@ -94,13 +94,12 @@ instance FromRow JobId where
 
 -- The fundamental record stored in the queue. The queue is a single table
 -- and each row consists of a 'Job'.
-      -- SELECT id, args, state, attempts, created_at
 data Job = Job
   { qjId :: JobId
   , qjArgs :: Value -- ^ The arguments of a job encoded as JSON.
+  , qjRunAt :: UTCTime
   , qjState :: State
   , qjAttempts :: Int
-  , qjCreatedAt :: UTCTime
   } deriving (Show, Eq)
 
 instance FromRow Job where
@@ -211,11 +210,12 @@ withJobDB :: String
               -> DB (Either SomeException (Maybe a))
 withJobDB queueName retryCount f
   = query [sql|
-      SELECT id, args, state, attempts, created_at
+      SELECT id, args, run_at, state, attempts
       FROM queued_jobs
       WHERE queue = ?
       AND state = 'enqueued'
-      ORDER BY created_at ASC
+      AND run_at <= clock_timestamp()
+      ORDER BY run_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     |] (Only $ queueName)
