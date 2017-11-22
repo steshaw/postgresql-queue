@@ -6,16 +6,12 @@ module Database.PostgreSQL.Simple.Queue.Migrate where
 import Control.Monad
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.SqlQQ
-import Data.Monoid
-import Data.String
 
 {-| This function creates a table and enumeration type that is
     appropriate for the queue.
 -}
-migrate :: String -> Connection -> IO ()
-migrate schemaName conn = void $ execute_ conn $
-  "CREATE SCHEMA IF NOT EXISTS " <> fromString schemaName <> ";" <>
-  "SET search_path TO " <> fromString schemaName <> ";" <> [sql|
+migrate :: Connection -> IO ()
+migrate conn = void $ execute_ conn [sql|
   DO $$
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'state_t') THEN

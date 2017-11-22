@@ -26,7 +26,7 @@ schemaName :: String
 schemaName = "complicated_name"
 
 spec :: Spec
-spec = describeDB (migrate schemaName) "Database.Queue" $ do
+spec = describeDB migrate "Database.Queue" $ do
   itDB "empty locks nothing" $
     (either throwM return =<< (withPayloadDB schemaName 8 return))
       `shouldReturn` Nothing
