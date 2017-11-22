@@ -12,26 +12,21 @@ Typically a producer would enqueue a new job as part of larger database
 transaction:
 
 @
-  createAccount userRecord = do
-     'runDBTSerializable' $ do
-        createUserDB userRecord
-        'enqueueDB' $ makeVerificationEmail userRecord
+createAccount userRecord = do
+  'runDBTSerializable' $ do
+    createUserDB userRecord
+    'enqueueDB' $ makeVerificationEmail userRecord
 @
 
-In another thread or process, the consumer would drain the queue.
+In another thread or process, the consumer would drain the queue:
 
 @
-  forever $ do
-    -- Attempt get a job or block until one is available
-    job <- 'lock' conn
-
-    -- Perform application specific parsing of the job arguments.
-    case fromJSON $ 'qjArgs' job of
-      Success x -> sendEmail x -- Perform application specific processing
+forever $ do
+  -- Block until a job is available.
+  'withJob' sendEmailQueue connection maxRetries $ \Job {..} -> do
+    case fromJSON qjArgs of
+      Success email -> sendEmail email -- Perform application specific processing
       Error err -> logErr err
-
-    -- Remove the job from future processing
-    'dequeue' conn $ 'qjId' job
 @
 
 This modules provides two flavors of functions, a DB API and an IO API.
