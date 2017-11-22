@@ -146,16 +146,17 @@ notifyDB :: String -> DB ()
 notifyDB queueName =
   void $ execute_ ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";")
 
-{-| Enqueue a new JSON value into the queue. This particularly function
-    can be composed as part of a larger database transaction. For instance,
-    a single transaction could create a user and enqueue a email message.
+{-|
+Enqueue a new JSON value into the queue. This particularly function
+can be composed as part of a larger database transaction. For instance,
+a single transaction could create a user and enqueue a email message.
 
- @
-   createAccount userRecord = do
-      'runDBTSerializable' $ do
-         createUserDB userRecord
-         'enqueueDB' $ makeVerificationEmail userRecord
- @
+@
+createAccount userRecord = do
+  'runDBTSerializable' $ do
+    createUserDB userRecord
+    'enqueueDB' $ makeVerificationEmail userRecord
+@
 -}
 enqueueDB :: String -> Value -> DB JobId
 enqueueDB queueName args =
@@ -261,8 +262,9 @@ getFailedCountDB queueName = getCountDB queueName Failed
 -------------------------------------------------------------------------------
 ---  IO API
 -------------------------------------------------------------------------------
-{-| Enqueue a new JSON value into the queue. See 'enqueueDB' for a version
-    which can be composed with other queries in a single transaction.
+{-|
+Enqueue a new JSON value into the queue. See 'enqueueDB' for a version
+which can be composed with other queries in a single transaction.
 -}
 enqueue :: String -> Connection -> Value -> IO JobId
 enqueue queueName conn args =
@@ -274,10 +276,11 @@ notifyJob queueName conn = do
   Notification {..} <- getNotification conn
   unless (notificationChannel == notifyName queueName) $ notifyJob queueName conn
 
-{-| Return the oldest 'Job' which is 'Enqueued' or block until a
-    job arrives. This function utilizes PostgreSQL's LISTEN and NOTIFY
-    functionality to avoid excessively polling of the DB while
-    waiting for new jobs, without sacrificing promptness.
+{-|
+Return the oldest 'Job' which is 'Enqueued' or block until a
+job arrives. This function utilizes PostgreSQL's LISTEN and NOTIFY
+functionality to avoid excessively polling of the DB while
+waiting for new jobs, without sacrificing promptness.
 -}
 withJob
   :: String
@@ -297,14 +300,16 @@ withJob queueName conn retryCount f = bracket_
       continue
     Right (Just x) -> return $ Right x
 
-{-| Get the number of rows which are 'Enqueued'. This function runs
-    'getEnqueuedCountDB' in a 'ReadCommitted' transaction.
+{-|
+Get the number of rows which are 'Enqueued'. This function runs
+'getEnqueuedCountDB' in a 'ReadCommitted' transaction.
 -}
 getEnqueuedCount :: String -> Connection -> IO Int64
 getEnqueuedCount queueName = runDBT (getEnqueuedCountDB queueName) ReadCommitted
 
-{-| Get the number of rows which are 'Failed'. This function runs
-    'getFailedCountDB' in a 'ReadCommitted' transaction.
+{-|
+Get the number of rows which are 'Failed'. This function runs
+'getFailedCountDB' in a 'ReadCommitted' transaction.
 -}
 getFailedCount :: String -> Connection -> IO Int64
 getFailedCount queueName = runDBT (getFailedCountDB queueName) ReadCommitted
