@@ -47,6 +47,9 @@ module Database.PostgreSQL.Simple.Queue
   , dequeueDB
   , deleteDB
   , enqueueDB
+  , enqueueAtDB
+  , retryDB
+  , retryAtDB
   , notifyDB
   , withJobDB
   , getEnqueuedCountDB
@@ -146,6 +149,14 @@ notifyDB :: String -> DB ()
 notifyDB queueName =
   void $ execute_ ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";")
 
+enqueueAtDB :: String -> Value -> UTCTime -> DB JobId
+enqueueAtDB queueName args runAt =
+  fmap head $ query ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";" <> [sql|
+      INSERT INTO queued_jobs (queue, args, run_at)
+      VALUES (?, ?, ?)
+      RETURNING id;
+    |]) (queueName, args, runAt)
+
 {-|
 Enqueue a new JSON value into the queue. This particularly function
 can be composed as part of a larger database transaction. For instance,
@@ -159,39 +170,39 @@ createAccount userRecord = do
 @
 -}
 enqueueDB :: String -> Value -> DB JobId
-enqueueDB queueName args =
-  fmap head $ query ([sql| NOTIFY |] <> " " <> notifyName queueName <> ";" <> [sql|
-      INSERT INTO queued_jobs (queue, args)
-      VALUES (?, ?)
-      RETURNING id;
-    |]) (queueName, args)
+enqueueDB queueName args = do
+  enqueueAtDB queueName args =<< liftIO getCurrentTime
 
-retryDB :: Job -> DB Int64
-retryDB Job {..} =
+retryAtDB :: JobId -> UTCTime -> DB Int64
+retryAtDB qjId runAt =
   execute [sql|
     UPDATE queued_jobs
-    SET attempts = attempts + 1
+    SET attempts = attempts + 1, run_at = ?
     WHERE id = ?
-  |] (Only qjId)
+  |] (runAt, qjId)
 
-dequeueDB :: Job -> DB Int64
-dequeueDB Job {..} =
+retryDB :: JobId -> DB Int64
+retryDB qjId =
+  retryAtDB qjId =<< liftIO getCurrentTime
+
+dequeueDB :: JobId -> DB Int64
+dequeueDB qjId =
   execute [sql|
     UPDATE queued_jobs
     SET status = 'dequeued'
     WHERE id = ?
   |] (Only qjId)
 
-failedDB :: Job -> DB Int64
-failedDB Job {..} =
+failedDB :: JobId -> DB Int64
+failedDB qjId =
   execute [sql|
     UPDATE queued_jobs
     SET status = 'failed', attempts = attempts + 1
     WHERE id = ?
   |] (Only qjId)
 
-deleteDB :: Job -> DB Int64
-deleteDB Job {..} =
+deleteDB :: JobId -> DB Int64
+deleteDB qjId =
   execute [sql|
     DELETE FROM queued_jobs
     WHERE id = ?
@@ -224,7 +235,7 @@ withJobDB queueName retryCount f
     [job@Job {..}] ->
       handle (onError job) $ do
         result <- liftIO (f job)
-        deleteDB job
+        void $ deleteDB qjId
         pure (Right . Just $ result)
     xs -> return
         $ Left
@@ -234,12 +245,12 @@ withJobDB queueName retryCount f
         ++ show xs
   where
     onError :: Job -> SomeException -> DBT IO (Either SomeException a)
-    onError job@Job {..} e = do
+    onError Job {..} e = do
       -- Retry on failure up to retryCount.
       -- Set status to 'Failed' when retryCount reached.
       if (qjAttempts < retryCount)
-      then void $ retryDB job
-      else void $ failedDB job
+      then void $ retryDB qjId
+      else void $ failedDB qjId
       pure $ Left e
 
 -- | Get the number of rows in a particular status.

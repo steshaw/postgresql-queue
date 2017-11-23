@@ -20,6 +20,7 @@ import Data.Either
 import Data.Function
 import Data.List
 import Data.List.Split
+import Data.Time
 import Database.PostgreSQL.Simple.Queue
 import Database.PostgreSQL.Simple.Queue.Migrate
 
@@ -50,6 +51,44 @@ spec = describeDB migrate "Database.Queue" $ do
     either throwM pure =<< (withJobDB queueName 0 $ \(Job {..}) -> do
       qjAttempts `shouldBe` 0
       qjArgs `shouldBe` String "foo")
+
+  itDB "enqueueAt in future will dequeue when ready" $ do
+    let q2 = "futureQueue"
+    (either throwM pure =<< (withJobDB q2 0 pure))
+      `shouldReturn` Nothing
+    now <- liftIO getCurrentTime
+    let duration = 2 :: NominalDiffTime -- 2s
+    let future = duration `addUTCTime` now -- 2s from now
+    void $ enqueueAtDB q2 (String "future") future
+    (either throwM pure =<< (withJobDB q2 0 pure))
+      `shouldReturn` Nothing
+    liftIO $ threadDelay $ 1 * 1000 * 1000
+    (either throwM pure =<< (withJobDB q2 0 pure))
+      `shouldReturn` Nothing
+    liftIO $ threadDelay $ 1 * 1000 * 1000
+    (either throwM pure =<< (withJobDB q2 0 pure)) >>= \(Just Job {..}) -> do
+      qjAttempts `shouldBe` 0
+      qjArgs `shouldBe` String "future"
+
+  itDB "retryAt in future will dequeue when ready" $ do
+    let q = "retryInFuture"
+    (either throwM pure =<< (withJobDB q 0 pure))
+      `shouldReturn` Nothing
+    now <- liftIO getCurrentTime
+    jobId <- enqueueDB q (String "future")
+    -- Pretend that the job has failed to process and retry.
+    let duration = 2 :: NominalDiffTime -- 2s
+    let future = duration `addUTCTime` now -- 2s from now
+    void $ retryAtDB jobId future
+    (either throwM pure =<< (withJobDB q 0 pure))
+      `shouldReturn` Nothing
+    liftIO $ threadDelay $ 1 * 1000 * 1000
+    (either throwM pure =<< (withJobDB q 0 pure))
+      `shouldReturn` Nothing
+    liftIO $ threadDelay $ 1 * 1000 * 1000
+    (either throwM pure =<< (withJobDB q 0 pure)) >>= \(Just Job {..}) -> do
+      qjAttempts `shouldBe` 1
+      qjArgs `shouldBe` String "future"
 
   it "enqueuesDB/withJobDB" $ \conn -> do
     runDB conn $ do
