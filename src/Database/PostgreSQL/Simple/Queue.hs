@@ -50,6 +50,7 @@ module Database.PostgreSQL.Simple.Queue
   , enqueueAtDB
   , retryDB
   , retryAtDB
+  , notifyName
   , notifyDB
   , withJobDB
   , getEnqueuedCountDB
@@ -66,6 +67,7 @@ import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Data.Aeson
+import Data.Char (toLower)
 import Data.Function
 import Data.Int
 import Data.Monoid
@@ -143,7 +145,7 @@ instance FromField Status where
 ---  DB API
 -------------------------------------------------------------------------------
 notifyName :: (Monoid s, IsString s) => String -> s
-notifyName queueName = "queue_" <> fromString queueName
+notifyName queueName = "queue_" <> fromString (map toLower queueName)
 
 notifyDB :: String -> DB ()
 notifyDB queueName =
@@ -285,6 +287,7 @@ enqueue queueName conn args =
 notifyJob :: String -> Connection -> IO ()
 notifyJob queueName conn = do
   Notification {..} <- getNotification conn
+  print ("received notification" :: Text, notificationChannel)
   unless (notificationChannel == notifyName queueName) $ notifyJob queueName conn
 
 {-|
@@ -300,14 +303,22 @@ withJob
   -> (Job -> IO a)
   -> IO (Either SomeException a)
 withJob queueName conn retryCount f = bracket_
-  (Simple.execute_ conn $ "LISTEN " <> notifyName queueName)
-  (Simple.execute_ conn $ "UNLISTEN " <> notifyName queueName)
+  (do
+      print ("LISTEN" :: Text, notifyName queueName)
+      Simple.execute_ conn $ "LISTEN " <> notifyName queueName)
+  (do
+      print ("UNLISTEN" :: Text, notifyName queueName)
+      Simple.execute_ conn $ "UNLISTEN " <> notifyName queueName)
   $ fix
   $ \continue -> runDBT (withJobDB queueName retryCount f) ReadCommitted conn
   >>= \case
-    Left x -> return $ Left x
+    Left x -> do
+      print ("withJob Left", x)
+      return $ Left x
     Right Nothing -> do
+      print ("withJob Right -- calling notifyJob" :: Text)
       notifyJob queueName conn
+      print ("notifyJob returned!" :: Text)
       continue
     Right (Just x) -> return $ Right x
 
