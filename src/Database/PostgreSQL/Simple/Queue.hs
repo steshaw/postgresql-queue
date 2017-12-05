@@ -52,6 +52,7 @@ module Database.PostgreSQL.Simple.Queue
   , retryAtDB
   , notifyName
   , notifyDB
+  , notifyJob
   , withJobDB
   , getEnqueuedCountDB
   , getFailedCountDB
